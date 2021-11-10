@@ -10,11 +10,11 @@ int fib(int n) {
     return curr;
 }
 
-// double fdiv(double a, double b) {
-//     return a / b;
-// }
+double fdiv(double a, double b) {
+    return a / b;
+}
 
-int main() {
-    // return fadd(0.0001, 2.0);
-    return fib(20);
+double main() {
+    return fdiv(0.0001, 2.0);
+    // return fib(20);
 }
