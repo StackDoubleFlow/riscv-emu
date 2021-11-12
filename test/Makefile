@@ -7,3 +7,7 @@ image.bin: main.o
 
 main.o: main.c start.s
 	$(CC) -o main.o start.s main.c $(CFLAGS)
+
+.PHONY: clean
+clean:
+	rm *.o *.bin

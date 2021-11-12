@@ -15,6 +15,5 @@ double fdiv(double a, double b) {
 }
 
 double main() {
-    return fdiv(0.0001, 2.0);
-    // return fib(20);
+    return fdiv(400, 3);
 }
