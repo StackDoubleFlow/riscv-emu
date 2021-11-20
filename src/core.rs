@@ -1,7 +1,4 @@
-use byteorder::{ByteOrder, LittleEndian};
-use std::convert::TryInto;
-
-const MEMORY_SIZE: usize = 32768; // 32kb
+use crate::mem::{Mem, MEMORY_SIZE};
 
 fn read_imm_i(inst: u32) -> u32 {
     (inst as i32 >> 20) as u32
@@ -42,28 +39,29 @@ enum Opcode {
     Store,
     MiscMem,
     System,
+    Amo,
 }
 
 pub struct Core {
-    mem: [u8; MEMORY_SIZE],
-    reg: [u32; 32],
-    pc: u32,
-    cycle_count: usize,
+    pub mem: Mem,
+    pub reg: [u32; 32],
+    pub pc: u32,
+    pub cycle_count: usize,
 }
 
 impl Core {
     pub fn new() -> Core {
         Core {
-            mem: [0; MEMORY_SIZE],
+            mem: Default::default(),
             reg: [0; 32],
-            pc: 0,
+            pc: 0x80000000,
             cycle_count: 0,
         }
     }
 
     pub fn reset(&mut self) {
         self.reg = [0; 32];
-        self.pc = 0;
+        self.pc = 0x80000000;
     }
 
     pub fn load_image(&mut self, mut data: Vec<u8>) {
@@ -71,7 +69,7 @@ impl Core {
 
         self.reset();
         data.extend(std::iter::repeat(0).take(MEMORY_SIZE - data.len()));
-        self.mem.clone_from(&data.try_into().unwrap());
+        self.mem.mem.clone_from_slice(data.as_slice());
     }
 
     pub fn run(&mut self) {
@@ -81,18 +79,17 @@ impl Core {
     }
 
     pub fn step(&mut self) {
-        let pc = self.pc as usize;
-        let inst = LittleEndian::read_u32(&self.mem[pc..pc + 4]);
+        let inst = self.mem.lw(self.pc);
 
-        let rs1 = (inst >> 15) & 0b11111;
-        let rs2 = (inst >> 20) & 0b11111;
-        let rd = (inst >> 7) & 0b11111;
+        let rs1_raw = (inst >> 15) & 0b11111;
+        let rs2_raw = (inst >> 20) & 0b11111;
+        let rd_raw = (inst >> 7) & 0b11111;
         let funct3 = (inst >> 12) & 0b111;
         let funct7 = (inst >> 25) & 0b1111111;
 
-        let rs1 = self.reg[rs1 as usize];
-        let rs2 = self.reg[rs2 as usize];
-        let rd = &mut self.reg[rd as usize];
+        let rs1 = self.reg[rs1_raw as usize];
+        let rs2 = self.reg[rs2_raw as usize];
+        let rd = &mut self.reg[rd_raw as usize];
 
         let opcode = match (inst & 0b1111100) >> 2 {
             0b00000 => Opcode::Load,
@@ -106,23 +103,24 @@ impl Core {
             0b11100 => Opcode::System,
             0b00101 => Opcode::Auipc,
             0b01101 => Opcode::Lui,
-            x => {
-                println!("Hit invalid opcode: {:05b}", x);
-                return;
-            }
+            0b01011 => Opcode::Amo,
+            x => panic!("Hit invalid opcode: {:05b}", x),
         };
 
-        println!("pc: {:08x}, Opcode: {:?}", pc, opcode);
+        println!(
+            "Inst: {:032b}, pc: {:08x}, Opcode: {:?}",
+            inst, self.pc, opcode
+        );
 
         match opcode {
             Opcode::Load => {
-                let addr = (rs1 + read_imm_i(inst)) as usize;
+                let addr = rs1 + read_imm_i(inst);
                 *rd = match funct3 {
-                    0 => self.mem[addr] as i8 as i32 as u32,
-                    1 => LittleEndian::read_i16(&self.mem[addr..addr + 2]) as i32 as u32,
-                    2 => LittleEndian::read_u32(&self.mem[addr..addr + 4]),
-                    4 => self.mem[addr] as u32,
-                    5 => LittleEndian::read_u16(&self.mem[addr..addr + 2]) as u32,
+                    0 => self.mem.lb(addr) as i8 as i32 as u32,
+                    1 => self.mem.lh(addr) as i32 as u32,
+                    2 => self.mem.lw(addr),
+                    4 => self.mem.lb(addr) as u32,
+                    5 => self.mem.lh(addr) as u32,
                     x => {
                         println!("Invalid load width: {}", x);
                         return;
@@ -131,11 +129,11 @@ impl Core {
                 self.pc += 4;
             }
             Opcode::Store => {
-                let addr = (rs1 + read_imm_s(inst)) as usize;
+                let addr = rs1 + read_imm_s(inst);
                 match funct3 {
-                    0 => self.mem[addr] = rs2 as u8,
-                    1 => LittleEndian::write_u16(&mut self.mem[addr..addr + 2], rs2 as u16),
-                    2 => LittleEndian::write_u32(&mut self.mem[addr..addr + 4], rs2 as u32),
+                    0 => self.mem.sb(addr, rs2 as u8),
+                    1 => self.mem.sh(addr, rs2 as u16),
+                    2 => self.mem.sw(addr, rs2 as u32),
                     x => {
                         println!("Invalid store width: {}", x);
                         return;
@@ -246,6 +244,40 @@ impl Core {
             }
             Opcode::Lui => {
                 *rd = read_imm_u(inst);
+                self.pc += 4;
+            }
+            Opcode::Amo => {
+                assert!(funct3 == 0b010, "Invalid width for AMO");
+                match funct7 >> 2 {
+                    0b00010 => {
+                        *rd = self.mem.lw(rs1);
+                    }
+                    0b00011 => {
+                        self.mem.sw(rs1, rs2);
+                        *rd = 0;
+                    }
+                    0b00001 => {
+                        let temp = self.mem.lw(rs1);
+                        self.mem.sw(rs1, rs2);
+                        *rd = temp;
+                    }
+                    x => {
+                        let temp = self.mem.lw(rs1);
+                        *rd = temp;
+                        let new = match x {
+                            0b00000 => temp + rs2,
+                            0b00100 => temp ^ rs2,
+                            0b01100 => temp & rs2,
+                            0b01000 => temp | rs2,
+                            0b10000 => (temp as i32).min(rs2 as i32) as u32,
+                            0b10100 => (temp as i32).max(rs2 as i32) as u32,
+                            0b11000 => temp.min(rs2),
+                            0b11100 => temp.max(rs2),
+                            x => panic!("{}", x),
+                        };
+                        self.mem.sw(rs1, new);
+                    }
+                }
                 self.pc += 4;
             }
         }
