@@ -44,6 +44,7 @@ enum Opcode {
 
 pub struct Core {
     pub mem: Mem,
+    pub csrs: [u32; 4096],
     pub reg: [u32; 32],
     pub pc: u32,
     pub cycle_count: usize,
@@ -53,6 +54,7 @@ impl Core {
     pub fn new() -> Core {
         Core {
             mem: Default::default(),
+            csrs: [0; 4096],
             reg: [0; 32],
             pc: 0x80000000,
             cycle_count: 0,
@@ -223,20 +225,55 @@ impl Core {
             }
             Opcode::System => {
                 let funct12 = inst >> 20;
-                match funct12 {
-                    0 => todo!("ECALL"),
-                    1 => {
-                        println!("Hit EBREAK");
-                        println!("Cycle count: {}", self.cycle_count);
-                        println!("Register state:");
-                        for (i, &val) in self.reg.iter().enumerate() {
-                            println!(" x{}: {:x} ({})", i, val, val);
+                match funct3 {
+                    0b000 => {
+                        if funct12 == 0 {
+                            todo!("ECALL");
+                        } else if funct12 == 1 {
+                            println!("Hit EBREAK");
+                            println!("Cycle count: {}", self.cycle_count);
+                            println!("Register state:");
+                            for (i, &val) in self.reg.iter().enumerate() {
+                                println!(" x{}: {:x} ({})", i, val, val);
+                            }
+                            std::process::exit(0);
+                        } else {
+                            panic!();
                         }
-                        std::process::exit(0);
                     }
-                    _ => unimplemented!(),
-                };
-                // self.pc += 4;
+                    0b001 => {
+                        let temp = self.csrs[funct12 as usize];
+                        self.csrs[funct12 as usize] = rs1;
+                        *rd = temp;
+                    }
+                    0b010 => {
+                        let temp = self.csrs[funct12 as usize];
+                        self.csrs[funct12 as usize] |= rs1;
+                        *rd = temp;
+                    }
+                    0b011 => {
+                        let temp = self.csrs[funct12 as usize];
+                        self.csrs[funct12 as usize] = temp & !rs1;
+                        *rd = temp;
+                    }
+                    0b101 => {
+                        let temp = self.csrs[funct12 as usize];
+                        self.csrs[funct12 as usize] = rs1_raw;
+                        *rd = temp;
+                    }
+                    0b110 => {
+                        let temp = self.csrs[funct12 as usize];
+                        self.csrs[funct12 as usize] |= rs1_raw;
+                        *rd = temp;
+                    }
+                    0b111 => {
+                        let temp = self.csrs[funct12 as usize];
+                        self.csrs[funct12 as usize] = temp & !rs1_raw;
+                        *rd = temp;
+                    }
+                    _ => panic!()
+                }
+                self.pc += 4;
             }
             Opcode::Auipc => {
                 *rd = self.pc + read_imm_u(inst);
